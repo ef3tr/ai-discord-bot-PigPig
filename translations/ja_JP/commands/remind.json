@@ -1,0 +1,15 @@
+{
+    "responses": {
+        "received": "リマインダーを受信しました",
+        "confirm_setup": "リマインダーの設定を確認",
+        "future_time_required": "将来の時間が必要です",
+        "invalid_format": "無効な形式",
+        "reminder_message": "リマインダー: {message}",
+        "fallback_user": "ユーザー",
+        "error_setting": "リマインダー設定エラー"
+    },
+    "time_units": {
+        "seconds": "秒",
+        "unit_key": "時間単位"
+    }
+}
