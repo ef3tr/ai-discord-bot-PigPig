@@ -1,0 +1,178 @@
+"""
+版本檢查器模組
+
+負責檢查 GitHub 上的最新版本並與當前版本進行比較。
+"""
+
+import aiohttp
+from addons.logging import get_logger
+from typing import Dict, Optional
+import update
+from function import func
+import asyncio
+# module-level logger
+log = get_logger(server_id="Bot", source=__name__)
+
+
+class VersionChecker:
+    """版本檢查器"""
+    
+    def __init__(self, github_config: Dict[str, str]):
+        """
+        初始化版本檢查器
+        
+        Args:
+            github_config: GitHub 配置資訊
+        """
+        self.github_api_url = github_config.get(
+            "api_url", 
+            "https://api.github.com/repos/starpig1129/ai-discord-bot-PigPig/releases/latest"
+        )
+        self.current_version = self._get_current_version()
+        # bind to a system-level server id to ensure server context exists
+        self.logger = get_logger(server_id="Bot", source=__name__)
+    
+    def _get_current_version(self) -> str:
+        """
+        獲取當前版本
+        
+        Returns:
+            當前版本字串
+        """
+        try:
+            # 嘗試從 base_configs/base.yaml 獲取版本
+            import os
+            import yaml
+            config_path = os.path.join(os.getenv("CONFIG_ROOT", "./base_configs"), "base.yaml")
+            
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config_data = yaml.safe_load(f)
+                    version = config_data.get("version", "")
+                    if version:
+                        return version
+            
+            # 如果無法從配置獲取，使用 git 或預設版本
+            try:
+                import subprocess
+                result = subprocess.run(['git', 'describe', '--tags', '--always'],
+                                      capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    return result.stdout.strip()
+            except Exception:
+                pass
+                
+            # 使用預設版本
+            return "v3.0.0"
+            
+        except Exception as e:
+            self.logger.warning(f"獲取版本資訊時發生錯誤: {e}，使用預設版本")
+            return "v3.0.0"
+    
+    async def check_for_updates(self) -> Dict[str, any]:
+        """
+        檢查是否有可用更新
+        
+        Returns:
+            包含版本資訊和更新狀態的字典
+        """
+        try:
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(self.github_api_url) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        latest_version = data.get("name", self.current_version)
+                        
+                        # 移除版本號中的 'v' 前綴進行比較
+                        current_clean = self.current_version.lstrip('v')
+                        latest_clean = latest_version.lstrip('v')
+                        
+                        # 簡單的版本比較
+                        update_available = self._compare_versions(current_clean, latest_clean)
+                        
+                        return {
+                            "current_version": self.current_version,
+                            "latest_version": latest_version,
+                            "update_available": update_available,
+                            "release_notes": data.get("body", ""),
+                            "published_at": data.get("published_at", ""),
+                            "download_url": f"https://github.com/starpig1129/ai-discord-bot-PigPig/archive/refs/tags/{latest_version}.zip",
+                            "tag_name": data.get("tag_name", latest_version),
+                            "prerelease": data.get("prerelease", False)
+                        }
+                    else:
+                        self.logger.error(f"GitHub API 請求失敗: HTTP {response.status}")
+                        return self._get_error_result(f"GitHub API 請求失敗: HTTP {response.status}")
+                        
+        except aiohttp.ClientError as e:
+            self.logger.error(f"網路請求錯誤: {e}")
+            return self._get_error_result(f"網路請求錯誤: {e}")
+        except Exception as e:
+            self.logger.error(f"版本檢查時發生未預期錯誤: {e}")
+            await func.report_error(e, "addons/update/checker.py")
+            return self._get_error_result(f"版本檢查錯誤: {e}")
+    
+    def _compare_versions(self, current: str, latest: str) -> bool:
+        """
+        比較版本號
+        
+        Args:
+            current: 當前版本
+            latest: 最新版本
+            
+        Returns:
+            如果有新版本可用則返回 True
+        """
+        try:
+            # 將版本號分割為數字列表進行比較
+            current_parts = [int(x) for x in current.split('.')]
+            latest_parts = [int(x) for x in latest.split('.')]
+            
+            # 補齊較短的版本號
+            max_length = max(len(current_parts), len(latest_parts))
+            current_parts.extend([0] * (max_length - len(current_parts)))
+            latest_parts.extend([0] * (max_length - len(latest_parts)))
+            
+            # 逐位比較
+            for curr, lat in zip(current_parts, latest_parts):
+                if lat > curr:
+                    return True
+                elif lat < curr:
+                    return False
+            
+            return False  # 版本相同
+            
+        except ValueError:
+            # 如果版本號格式不標準，使用字串比較
+            self.logger.warning(f"版本號格式不標準，使用字串比較: {current} vs {latest}")
+            return latest != current
+    
+    def _get_error_result(self, error_message: str) -> Dict[str, any]:
+        """
+        獲取錯誤結果
+        
+        Args:
+            error_message: 錯誤訊息
+            
+        Returns:
+            錯誤結果字典
+        """
+        return {
+            "current_version": self.current_version,
+            "latest_version": self.current_version,
+            "update_available": False,
+            "release_notes": "",
+            "published_at": "",
+            "download_url": "",
+            "error": error_message
+        }
+    
+    def get_current_version(self) -> str:
+        """
+        獲取當前版本
+        
+        Returns:
+            當前版本字串
+        """
+        return self.current_version

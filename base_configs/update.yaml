@@ -1,0 +1,33 @@
+auto_update:
+  enabled: true
+  check_interval: 21600
+  require_owner_confirmation: true
+  auto_restart: true
+
+security:
+  backup_enabled: true
+  max_backups: 5
+  verify_downloads: true
+  protected_files:
+    - "configs/"
+    - ".env"
+    - ".git/"
+    - ".gitignore"
+    - ".gitattributes"
+    - "data/"
+
+notification:
+  discord_dm: true
+  update_channel_id: null
+  notification_mentions: []
+
+restart:
+  graceful_shutdown_timeout: 30
+  restart_command: "python main.py"
+  pre_restart_delay: 10
+
+github:
+  repository: "starpig1129/ai-discord-bot-PigPig"
+  api_url: "https://api.github.com/repos/starpig1129/ai-discord-bot-PigPig/releases/latest"
+  download_url: "https://github.com/starpig1129/ai-discord-bot-PigPig/archive/"
+
