@@ -1,0 +1,23 @@
+{
+    "queue_empty": "Queue is empty",
+    "duration": "Duration",
+    "views": "Views",
+    "progress": "Progress",
+    "queue": "Up Next",
+    "added_by": "Added by",
+    "commands": {
+        "music": {
+            "player": {
+                "queue_empty": "Queue is empty",
+                "duration": "Duration",
+                "views": "Views",
+                "progress": "Progress",
+                "queue": "Up Next",
+                "added_by": "Added by"
+            }
+        }
+    },
+    "now_playing": "🎵 Now Playing",
+    "uploader": "👤 Uploader",
+    "more_songs": "... and {count} more songs"
+}

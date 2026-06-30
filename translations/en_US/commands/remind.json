@@ -1,0 +1,15 @@
+{
+    "responses": {
+        "received": "Reminder received",
+        "confirm_setup": "Confirm setting reminder",
+        "future_time_required": "Future time required",
+        "invalid_format": "Invalid format",
+        "reminder_message": "Reminder: {message}",
+        "fallback_user": "User",
+        "error_setting": "Error setting reminder"
+    },
+    "time_units": {
+        "seconds": "seconds",
+        "unit_key": "time unit"
+    }
+}
