@@ -1,0 +1,150 @@
+site_name: PigPig Discord Bot
+site_description: An advanced Discord AI Agent bot with modular cognition, memory, and reasoning capabilities.
+site_author: starpig1129
+site_url: https://starpig1129.github.io/ai-discord-bot-PigPig
+repo_name: starpig1129/ai-discord-bot-PigPig
+repo_url: https://github.com/starpig1129/ai-discord-bot-PigPig
+edit_uri: edit/main/docs/
+
+# Link Validation
+validation:
+  unrecognized_links: ignore
+
+use_directory_urls: true
+
+theme:
+  name: material
+  language: en
+  logo: assets/logo.png
+  favicon: assets/favicon.png
+  font:
+    text: Roboto
+    code: Roboto Mono
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.tracking
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+
+extra_css:
+  - stylesheets/extra.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/starpig1129
+    - icon: fontawesome/brands/discord
+      link: https://discord.gg/your-invite-link # Replace with real invite if available
+    - icon: fontawesome/solid/paper-plane
+      link: mailto:your-email@example.com
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - System Architecture:
+    - Main Entry: main.md
+    - Core Bot: bot.md
+    - Utilities: function.md
+    - Update System: update.md
+  - LLM Intelligence:
+    - Overview: llm/index.md
+    - Memory Systems:
+      - Overview: llm/memory/index.md
+      - Short-Term: llm/memory/short_term.md
+      - Episodic: llm/memory/episodic.md
+      - Procedural: llm/memory/procedural.md
+      - Knowledge: llm/memory/knowledge.md
+    - Tool System:
+      - Architecture: llm/tools/index.md
+      - Tool List: llm/tools/list.md
+    - Core Components:
+      - Orchestrator: llm/orchestrator.md
+      - Context Manager: llm/context_manager.md
+      - Tools Factory: llm/tools_factory.md
+      - Model Manager: llm/model_manager.md
+      - Circuit Breaker: llm/model_circuit_breaker.md
+      - Callbacks: llm/callbacks.md
+      - Prompt Protection: llm/protected_prompt_system.md
+      - Data Schema: llm/schema.md
+  - Features (Cogs):
+    - Overview: cogs/index.md
+    - Memory System:
+      - Episodic Memory: cogs/episodic_memory.md
+      - Memory Commands: cogs/memory_commands.md
+    - Language & System Prompt:
+      - Language Management: cogs/language_manager.md
+      - System Prompt Management: cogs/system_prompt_manager.md
+    - Tools:
+      - Internet Search: cogs/internet_search.md
+      - Image Generation: cogs/gen_img.md
+      - GIF Tools: cogs/gif_tools.md
+      - Music Feature: cogs/music.md
+      - Math Operations: cogs/math.md
+    - Admin & Maintenance:
+      - User Statistics: cogs/stats_cog.md
+      - Update Management: cogs/update_manager.md
+      - Channel Management: cogs/channel_manager.md
+      - User Data: cogs/userdata.md
+      - Performance Monitoring: cogs/performance.md
+    - Other Features:
+      - Reminders: cogs/remind.md
+      - Summarizer: cogs/summarizer.md
+      - Story Management: cogs/story_manager.md
+      - Scheduling: cogs/schedule.md
+      - Bot Info: cogs/botinfo.md
+      - Help Menu: cogs/help.md
+  - System Addons:
+    - Overview: addons/index.md
+    - Settings: addons/settings.md
+    - Tokens: addons/tokens.md
+    - Logging: addons/logging.md
+  - Legal & Policies:
+    - Privacy Policy: PRIVACY_POLICY.md
+    - Terms of Service: TERMS_OF_SERVICE.md

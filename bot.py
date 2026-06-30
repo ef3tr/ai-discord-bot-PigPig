@@ -1,0 +1,830 @@
+# MIT License
+
+# Copyright (c) 2024 starpig1129
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+"""Discord bot main module.
+
+This module contains the main bot class and configuration for a Discord bot
+with music playback, message handling, and logging capabilities.
+"""
+
+# Initialize stdlib logging interception early to capture third-party and legacy logging
+# This must run before noisy libraries are imported so their LogRecords are intercepted.
+try:
+    from addons.logging import configure_std_logging
+    configure_std_logging()
+except Exception as e:
+    # Best-effort error reporting via func.report_error if available, otherwise print.
+    try:
+        import asyncio
+        from function import func
+        asyncio.create_task(func.report_error(e, "bot.py/init/configure_std_logging"))
+    except Exception:
+        print("Failed to configure stdlib logging interception:", e)
+
+import discord
+import sys
+import os
+import traceback
+import update
+from function import func, ROOT_DIR
+import json
+import asyncio
+from datetime import datetime, timezone
+from discord.ext import commands, tasks
+from itertools import cycle
+from cogs.music_lib.state_manager import StateManager
+from cogs.music_lib.ui_manager import UIManager
+from llm.orchestrator import Orchestrator
+from addons.logging import get_logger
+
+# Module-level logger for bot module
+log = get_logger(server_id="Bot", source=__name__)
+
+
+from addons.settings import base_config, memory_config
+from addons.tokens import tokens
+
+
+# Logging migrated to addons.logging_manager.get_logger
+# Per-guild logger creation is now performed via get_logger(server_id, source, channel).
+
+
+class PigPig(commands.Bot):
+    """Main Discord bot class with music, messaging, and logging features.
+    
+    This bot extends discord.ext.commands.Bot with additional functionality including:
+    - Per-guild logging system
+    - Music playback state management
+    - AI-powered message handling
+    - Performance monitoring
+    - Dynamic status updates
+    
+    Attributes:
+        loggers (dict): Dictionary mapping guild names to their logger instances.
+        state_manager (StateManager): Manager for music playback states.
+        ui_manager (UIManager): Manager for music player UI components.
+        status_cycle (itertools.cycle): Cycle iterator for rotating bot status messages.
+        message_handler (MessageHandler): Handler for processing Discord messages.
+    """
+    
+    def __init__(self, *args, **kwargs):
+        """Initialize the PigPig bot instance.
+        
+        Args:
+            *args: Variable length argument list passed to parent Bot class.
+            **kwargs: Arbitrary keyword arguments passed to parent Bot class.
+        """
+        super().__init__(*args, **kwargs)
+        func.set_bot(self)
+        self.loggers = {}
+        
+        # Music system managers
+        self.state_manager = StateManager()
+        self.ui_manager = UIManager(self)
+
+
+        # Statistics Subsystem
+        from dashboard.services.stats_collector import StatsCollector
+        self.stats_collector = StatsCollector()
+
+        # Memory subsystem (instantiate only when enabled)
+        if getattr(memory_config, "enabled", True):
+            # lazy import to avoid loading memory modules when disabled
+
+            import cogs.memory.embedding_providers  # noqa: F401
+            from cogs.memory.db.procedural_storage import ProceduralStorage
+            from cogs.memory.db.episodic_storage import EpisodicStorage
+            from cogs.memory.db.connection import DatabaseConnection
+            from cogs.memory.users.manager import SQLiteUserManager
+            from cogs.memory.vector.manager import VectorManager
+            from cogs.memory.services.message_tracker import MessageTracker
+
+            # Initialize in dependency order (split responsibilities)
+            db_conn_procedural = DatabaseConnection(memory_config.procedural_data_path, bot=self)
+            db_conn_episodic = DatabaseConnection(memory_config.episodic_data_path, bot=self)
+            # assign storages explicitly
+            self.procedural_storage = ProceduralStorage(db_conn_procedural)
+            self.episodic_storage = EpisodicStorage(db_conn_episodic)
+
+            # Initialize managers/services with the appropriate storage
+            self.user_manager = SQLiteUserManager(storage=self.procedural_storage)
+            self.vector_manager = VectorManager(bot=self, settings=memory_config)
+            self.message_tracker = MessageTracker(bot=self, storage=self.episodic_storage, settings=memory_config)
+        else:
+            # keep attributes for compatibility but do not initialize subsystems
+            self.procedural_storage = None
+            self.episodic_storage = None
+            self.user_manager = None
+            self.vector_manager = None
+            self.message_tracker = None
+        
+        self.status_cycle = cycle([
+            (discord.ActivityType.listening, "大家的聲音"),
+            (discord.ActivityType.playing, "泥巴在{n}個伺服器裡")
+        ])
+
+    @tasks.loop(seconds=15)
+    async def change_status_task(self):
+        """Update bot status every 15 seconds.
+        
+        Cycles through predefined status messages, replacing placeholders
+        with current bot statistics (e.g., number of guilds).
+        
+        Note:
+            This is a discord.ext.tasks loop that runs continuously.
+        """
+        activity_type, name = next(self.status_cycle)
+        
+        if "{n}" in name:
+            name = name.format(n=len(self.guilds))
+        
+        await self._change_presence(
+            activity=discord.Activity(
+                type=activity_type,
+                name=name
+            )
+        )
+
+    async def _change_presence(self, *args, **kwargs):
+        """Wrapper for change_presence to handle connection errors.
+        
+        Attempts to change bot presence and handles ConnectionResetError
+        by waiting 60 seconds before allowing retry.
+        
+        Args:
+            *args: Variable length argument list passed to change_presence.
+            **kwargs: Arbitrary keyword arguments passed to change_presence.
+            
+        Note:
+            Prints error message and sleeps on ConnectionResetError.
+        """
+        try:
+            await self.change_presence(*args, **kwargs)
+        except ConnectionResetError:
+            log.warning("Connection reset error while changing presence, retrying in 60 seconds...")
+            await asyncio.sleep(60)
+
+    def get_logger_for_guild(self, guild_id):
+        """Get or create logger for a specific guild.
+        
+        Args:
+            guild_id (str): ID of the guild to get logger for.
+            
+        Returns:
+            logging.Logger: Logger instance for the specified guild.
+            
+        Note:
+            Creates a new logger if one doesn't exist for the guild.
+        """
+        guild_id = str(guild_id)
+        if guild_id in self.loggers:
+            return self.loggers[guild_id]
+        else:
+            self.setup_logger_for_guild(guild_id)
+            return self.loggers[guild_id]
+        
+    def setup_logger_for_guild(self, guild_id):
+        """Set up logger for a guild if it doesn't exist."""
+        guild_id = str(guild_id)
+        if guild_id not in self.loggers:
+            try:
+                # Use the new logging manager factory
+                self.loggers[guild_id] = get_logger(server_id=guild_id, source="server")
+            except Exception as e:
+                # Report failure via project error reporting and fall back to a best-effort creation
+                try:
+                    asyncio.create_task(func.report_error(e, f"setup_logger_for_guild: {guild_id}"))
+                except Exception:
+                    log.error(f"Failed to create logger for {guild_id}: {e}")
+                    # Final fallback: create logger without additional context
+                    self.loggers[guild_id] = get_logger(server_id=guild_id, source="server")
+        
+    async def on_message(self, message: discord.Message, /) -> None:
+        """Handle incoming Discord messages.
+        
+        Processes messages by:
+        1. Setting up guild-specific logging
+        2. Logging message details
+        3. Ignoring bot messages
+        4. Processing commands
+        5. Handling special channel modes (story mode)
+        6. Delegating to message handler for AI responses
+        
+        Args:
+            message (discord.Message): The incoming Discord message object.
+            
+        Returns:
+            None
+            
+        Note:
+            - Ignores messages from DMs (no guild)
+            - Ignores messages from other bots
+            - Checks channel permissions and modes before processing
+        """
+        try:
+
+            if not message.guild or message.author.bot:
+                return
+            
+            if self.message_tracker:
+                await self.message_tracker.track_message(message)
+            
+            # Update user activity and names in background
+            if hasattr(self, 'user_manager') and self.user_manager:
+                asyncio.create_task(self.user_manager.update_user_activity(
+                    str(message.author.id), 
+                    message.author.name, 
+                    message.author.display_name
+                ))
+
+            # Record message event for dashboard statistics
+            try:
+                if hasattr(self, 'stats_collector') and self.stats_collector:
+                    await self.stats_collector.record_message(
+                        guild_id=str(message.guild.id),
+                        user_id=str(message.author.id),
+                        channel_id=str(message.channel.id),
+                    )
+            except Exception:
+                pass  # Stats recording must never block message handling
+
+            guild_id = str(message.guild.id)
+            self.setup_logger_for_guild(guild_id)
+            logger = self.loggers[guild_id]
+            bound_log = logger.bind(server_id=str(message.guild.id), user_id=str(message.author.id))
+            
+            bound_log.info(message=message.content, channel_or_file=str(message.channel.name), action="receive_message")
+            
+            
+            await self.process_commands(message)
+            
+            # Delegate message processing to MessageHandler
+            # Check if message should be handled by bot (e.g., @mention or in specific channel)
+            channel_manager = self.get_cog('ChannelManager')
+            if channel_manager:
+                guild_id = str(message.guild.id)
+                is_allowed, auto_response_enabled, channel_mode = channel_manager.is_allowed_channel(message.channel, guild_id)
+
+                # Check if it's a story mode channel
+                if channel_mode == 'story':
+                    story_manager_cog = self.get_cog('StoryManagerCog')
+                    if story_manager_cog:
+                        await story_manager_cog.handle_story_message(message)
+                    return  # In story mode, don't continue with general message processing
+
+                # Only trigger handle_message if in allowed channel and mentioned or auto-response enabled
+                is_reply_to_bot = False
+                if message.reference:
+                    ref_msg = None
+                    if hasattr(message.reference, 'resolved') and isinstance(message.reference.resolved, discord.Message):
+                        ref_msg = message.reference.resolved
+                    elif hasattr(message.reference, 'cached_message') and message.reference.cached_message:
+                        ref_msg = message.reference.cached_message
+                        
+                    if ref_msg and ref_msg.author.id == self.user.id:
+                        is_reply_to_bot = True
+
+                if is_allowed and (self.user.id in message.raw_mentions and not message.mention_everyone or auto_response_enabled or is_reply_to_bot):
+                    # Check if this is the first guild message after a version update.
+                    _announce = False
+                    if hasattr(self, "version_storage"):
+                        _current_ver = getattr(base_config, "version", None)
+                        if _current_ver:
+                            _seen_ver = self.version_storage.get_seen_version(guild_id)
+                            _announce = (_seen_ver != _current_ver)
+
+                    message_edit = await message.reply("...")
+                    await self.orchestrator.handle_message(
+                        self, message_edit, message, bound_log,
+                        announce_new_version=_announce,
+                    )
+
+                    # Mark guild as having seen this version only after a successful reply.
+                    if _announce and hasattr(self, "version_storage"):
+                        _current_ver = getattr(base_config, "version", None)
+                        if _current_ver:
+                            self.version_storage.set_seen_version(guild_id, _current_ver)
+        except Exception as e:
+            await func.report_error(e, f"on_message: {e}")
+            
+    async def on_message_edit(self, before: discord.Message, after: discord.Message):
+        """Handle edited Discord messages.
+        
+        When a message mentioning the bot is edited:
+        1. Logs the edit details
+        2. Deletes the bot's previous reply to the original message
+        3. Generates a new response to the edited message
+        4. Handles story mode channels specially
+        
+        Args:
+            before (discord.Message): The message before editing.
+            after (discord.Message): The message after editing.
+            
+        Returns:
+            None
+            
+        Note:
+            - Ignores edits in DMs
+            - Ignores edits from bots
+            - Only responds to messages that mention the bot
+            - Searches last 50 messages to find bot's previous reply
+        """
+        try:
+            if not before.guild or before.author.bot or not after.guild or after.author.bot:
+                return
+            
+            logger = self.get_logger_for_guild(str(before.guild.id))
+            bound_log = logger.bind(server_id=str(before.guild.id), user_id=str(before.author.id))
+            bound_log.info(
+                message=f"Original={before.content} New={after.content}",
+                channel_or_file=str(before.channel.name),
+                action="edit_message",
+            )
+            
+            guild_id = str(after.guild.id)
+            channel_manager = self.get_cog('ChannelManager')
+            
+            # Implement logic for generating responses
+            if self.user.id in after.raw_mentions and not after.mention_everyone:
+                    # Fetch the bot's previous reply
+                    async for msg in after.channel.history(limit=50):
+                        if msg.reference and msg.reference.message_id == before.id and msg.author.id == self.user.id:
+                            await msg.delete()  # Delete previous reply
+                    if channel_manager:
+                        guild_id = str(after.guild.id)
+                        is_allowed, auto_response_enabled, channel_mode = channel_manager.is_allowed_channel(after.channel, guild_id)
+                        # Check if it's a story mode channel
+                        if channel_mode == 'story':
+                            story_manager_cog = self.get_cog('StoryManagerCog')
+                            if story_manager_cog:
+                                await story_manager_cog.handle_story_message(after)
+                            return  # In story mode, don't continue with general message processing
+                        
+                        is_reply_to_bot = False
+                        if after.reference:
+                            ref_msg = None
+                            if hasattr(after.reference, 'resolved') and isinstance(after.reference.resolved, discord.Message):
+                                ref_msg = after.reference.resolved
+                            elif hasattr(after.reference, 'cached_message') and after.reference.cached_message:
+                                ref_msg = after.reference.cached_message
+                                
+                            if ref_msg and ref_msg.author.id == self.user.id:
+                                is_reply_to_bot = True
+
+                        if is_allowed and (self.user.id in after.raw_mentions and not after.mention_everyone or auto_response_enabled or is_reply_to_bot):
+                            message_edit = await after.reply("...")
+                            await self.orchestrator.handle_message(self,message_edit, after, logger)
+                            
+        except Exception as e:
+            await func.report_error(e, f"on_message_edit: {e}")
+        
+    async def setup_hook(self) -> None:
+        """Set up bot before connecting to Discord.
+        
+        This method is called automatically by discord.py and performs:
+        1. Loading all cog modules from the cogs folder
+        2. Initializing MessageHandler
+        3. Starting IPC server if enabled
+        4. Updating version in settings
+        5. Syncing command tree with Discord
+        
+        Returns:
+            None
+            
+        Note:
+            - Filters out __init__.py, private modules (_*), and hidden files (.*) 
+            - Prints success/failure for each cog load attempt
+            - Initializes performance monitoring
+        """
+        # Initialize logging system early to ensure background writer starts.
+        try:
+            # Create a system-level logger to ensure background writer & sinks are initialized.
+            self.system_logger = get_logger(server_id="Bot", source="system")
+        except Exception as e:
+            try:
+                asyncio.create_task(func.report_error(e, "bot.py/setup_hook/init_logging"))
+            except Exception:
+                # If system logger fails, use the module-level logger as fallback
+                log.error(f"Failed to initialize system logger: {e}")
+
+        # Loading all the modules in `cogs` folder
+        for module in os.listdir(ROOT_DIR + '/cogs'):
+            # Filter conditions:
+            # 1. Must be a .py file
+            # 2. Exclude __init__.py (package initialization file)
+            # 3. Exclude files starting with _ (private modules)
+            # 4. Exclude files starting with . (hidden files)
+            if (module.endswith('.py') and
+                module != '__init__.py' and
+                not module.startswith('_') and
+                not module.startswith('.')):
+                try:
+                    await self.load_extension(f"cogs.{module[:-3]}")
+                    logger = getattr(self, "system_logger", log)
+                    logger.info(f"Loaded {module[:-3]}")
+                except Exception as e:
+                    logger = getattr(self, "system_logger", log)
+                    logger.error(f"Failed to load {module[:-3]}", exception=e)
+                    logger.error(traceback.format_exc())
+
+        # Initialize Orchestrator after cogs are loaded so UserDataCog is available
+        self.orchestrator = Orchestrator(self)
+
+        # Version announcement storage — independent of the memory subsystem.
+        from cogs.memory.db.version_storage import GuildVersionStorage
+        from addons.settings import memory_config
+        _version_db_path = getattr(memory_config, "db_path", "data/pigpig.db")
+        self.version_storage = GuildVersionStorage(_version_db_path)
+        log.info("GuildVersionStorage initialized")
+
+        # Provide running event loop to storage (for thread-safe coroutine submission) if supported.
+        if getattr(memory_config, "enabled", True) and getattr(self, "storage", None):
+            try:
+                self.storage._loop = asyncio.get_running_loop()
+            except Exception:
+                try:
+                    self.storage._loop = None
+                except Exception:
+                    pass
+        if getattr(memory_config, "enabled", True) and getattr(self, "episodic_storage", None):
+            await self.episodic_storage.initialize_channel_memory_state()
+        if getattr(memory_config, "enabled", True) and getattr(self, "vector_manager", None):
+            await self.vector_manager.initialize()
+
+        if getattr(self, "stats_collector", None):
+            await self.stats_collector.initialize()
+    
+        if base_config.ipc_server.get("enable", False):
+            await self.ipc.start()
+    
+        # Update version in settings.json using base_config.version (which gets from base_configs/base.yaml)
+        if base_config.version:
+            func.update_json("settings.json", new_data={"version": base_config.version})
+    
+        # Add a global error handler for slash commands
+        async def on_tree_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
+            logger = getattr(self, "system_logger", log)
+            guild_id_str = str(interaction.guild_id) if interaction.guild_id else "0"
+
+            logger.error(f"Error in slash command '{interaction.command.name if interaction.command else 'Unknown'}': {error}")
+            logger.error("".join(traceback.format_exception(type(error), error, error.__traceback__)))
+
+            await func.report_error(error, f"on_tree_error: {interaction.command.name if interaction.command else 'Unknown'}")
+
+            lang_manager = self.get_cog("LanguageManager")
+
+            # Handle specific expected errors first
+            if isinstance(error, discord.app_commands.CommandOnCooldown):
+                if lang_manager:
+                    try:
+                        error_msg = lang_manager.translate(guild_id_str, "errors", "cooldown")
+                        if error_msg:
+                            error_msg = error_msg.format(retry_after=round(error.retry_after, 1))
+                        else:
+                            error_msg = f"⏳ 請稍後再試。此指令還在冷卻中，需等待 {error.retry_after:.1f} 秒。(Command on cooldown)"
+                    except Exception:
+                        error_msg = f"⏳ 請稍後再試。此指令還在冷卻中，需等待 {error.retry_after:.1f} 秒。(Command on cooldown)"
+                else:
+                    error_msg = f"⏳ 此指令冷卻中，請再等候 {error.retry_after:.1f} 秒。(Command on cooldown. Please wait {error.retry_after:.1f}s.)"
+
+            elif isinstance(error, discord.app_commands.MissingPermissions):
+                if lang_manager:
+                    try:
+                        error_msg = lang_manager.translate(guild_id_str, "errors", "permission_denied")
+                        if not error_msg:
+                            error_msg = "❌ 你沒有權限使用此指令。(Permission denied)"
+                    except Exception:
+                        error_msg = "❌ 你沒有權限使用此指令。(Permission denied)"
+                else:
+                    error_msg = "🚫 您沒有足夠的權限執行此指令。(You do not have permission to execute this command.)"
+
+            elif isinstance(error, discord.app_commands.BotMissingPermissions):
+                error_msg = "🤖 機器人缺少必要的權限來執行此指令。(The bot is missing necessary permissions to execute this command.)"
+
+            else:
+                # Send a general user-friendly error message
+                if lang_manager:
+                    try:
+                        error_msg = lang_manager.translate(guild_id_str, "system", "errors", "unexpected")
+                        if not error_msg or error_msg.startswith("[Translation not found"):
+                            error_msg = "❌ 抱歉，執行此指令時發生未預期的錯誤。(An unexpected error occurred.)"
+                    except Exception:
+                        error_msg = "❌ 抱歉，執行此指令時發生未預期的錯誤。(An unexpected error occurred.)"
+                else:
+                    error_msg = "❌ 抱歉，執行此指令時發生未預期的錯誤。(An unexpected error occurred.)"
+
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(error_msg, ephemeral=True)
+                else:
+                    try:
+                        await interaction.edit_original_response(content=error_msg, embeds=[], attachments=[])
+                    except discord.NotFound:
+                        await interaction.followup.send(error_msg, ephemeral=True)
+            except Exception as send_e:
+                logger.error(f"Failed to send slash command error message: {send_e}")
+
+        self.tree.on_error = on_tree_error
+
+        await self.tree.sync()
+
+        # ── Dashboard server startup ──────────────────────────────────
+        try:
+            from dashboard.main import start_dashboard
+            await start_dashboard(self)
+        except Exception as e:
+            log.error(f"Failed to start dashboard: {e}")
+            try:
+                await func.report_error(e, "bot.py/setup_hook/start_dashboard")
+            except Exception:
+                pass
+
+    async def on_ready(self):
+        """Handle bot ready event.
+        
+        Called when the bot has successfully connected to Discord. Performs:
+        1. Prints bot information (name, ID, versions)
+        2. Collects and saves guild/channel information to JSON
+        3. Sets up loggers for all guilds
+        4. Updates client ID in tokens
+        5. Starts status update task
+        
+        Returns:
+            None
+            
+        Note:
+            - Creates logs/guilds_and_channels.json with server structure
+            - Initializes logger for each guild the bot is in
+            - Starts periodic status updates if not already running
+        """
+        logger = getattr(self, "system_logger", log)
+        logger.info("------------------")
+        logger.info(f"Logging As {self.user}")
+        logger.info(f"Bot ID: {self.user.id}")
+        logger.info("------------------")
+        logger.info(f"Discord Version: {discord.__version__}")
+        logger.info(f"Python Version: {sys.version}")
+        logger.info("------------------")
+        # Log guild and channel state using per-guild structured loggers.
+        for guild in self.guilds:
+            # Ensure logger exists and obtain it
+            try:
+                self.setup_logger_for_guild(str(guild.id))
+                logger = self.loggers[str(guild.id)]
+            except Exception as e:
+                # Report and continue if logger setup fails for this guild
+                try:
+                    asyncio.create_task(func.report_error(e, f"on_ready/setup_logger:{guild.id}"))
+                except Exception:
+                    log.error(f"Failed to setup logger for guild {guild.id}: {e}")
+                continue
+
+            # Build channel state list
+            channels = []
+            for channel in guild.channels:
+                channels.append({
+                    "name": channel.name,
+                    "id": channel.id,
+                    "type": str(channel.type),
+                })
+
+            # Persist JSON file in the server root (logs/<guild_id>/guilds_and_channels.json)
+            try:
+                log_dir = os.path.join(ROOT_DIR, "logs", str(guild.id))
+                os.makedirs(log_dir, exist_ok=True)
+                out_path = os.path.join(log_dir, "guilds_and_channels.json")
+                payload = {
+                    "guild": {"id": guild.id, "name": guild.name},
+                    "channels": channels,
+                    "timestamp": datetime.utcnow().replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z"),
+                }
+                with open(out_path, "w", encoding="utf-8") as fh:
+                    json.dump(payload, fh, ensure_ascii=False, indent=2)
+            except Exception as e:
+                # Report and continue if write fails for this guild
+                try:
+                    asyncio.create_task(func.report_error(e, f"on_ready/write_guild_state:{guild.id}"))
+                except Exception:
+                    log.error(f"Failed to write guild state for {guild.id}: {e}")
+
+        # After writing per-guild JSONs, also write a root mapping file (logs/guilds_map.json)
+        try:
+            logs_root = os.path.join(ROOT_DIR, "logs")
+            os.makedirs(logs_root, exist_ok=True)
+            map_path = os.path.join(logs_root, "guilds_map.json")
+            guild_map = {g.name: g.id for g in self.guilds}
+            with open(map_path, "w", encoding="utf-8") as mf:
+                json.dump(guild_map, mf, ensure_ascii=False, indent=2)
+        except Exception as e:
+            try:
+                asyncio.create_task(func.report_error(e, "on_ready/write_guilds_map"))
+            except Exception:
+                log.error(f"Failed to write guilds_map.json: {e}")
+
+        # Update tokens client id
+        tokens.client_id = self.user.id
+
+        # Start status update task
+        if not self.change_status_task.is_running():
+            self.change_status_task.start()
+
+    async def on_error(self, event_method: str, *args, **kwargs):
+        """Handle errors in event handlers.
+        
+        Called when an exception occurs in an event handler. Performs:
+        1. Gets appropriate logger
+        2. Logs error details and traceback
+        3. Reports error through error reporting system
+        
+        Args:
+            event_method (str): Name of the event method where error occurred.
+            *args: Variable length argument list from the event.
+            **kwargs: Arbitrary keyword arguments from the event.
+            
+        Returns:
+            None
+            
+        Note:
+            - Uses "Bot" as guild name for logger if guild context unavailable
+            - Prints to console in addition to logging to file
+        """
+        # Get logger
+        logger = self.get_logger_for_guild("Bot")
+
+        # Log error
+        logger.error(f"Error in event '{event_method}'")
+        logger.error(traceback.format_exc())
+
+        await func.report_error(sys.exc_info()[1], f"on_error event: {event_method}")
+
+
+    async def on_command_error(self, ctx: commands.Context, error: commands.CommandError):
+        """Handle errors in command execution.
+        
+        Called when a command raises an exception. Performs:
+        1. Ignores certain expected errors (CommandNotFound, DisabledCommand)
+        2. Logs error details with full traceback
+        3. Reports error through error reporting system
+        4. Sends error message to channel
+        
+        Args:
+            ctx (commands.Context): The invocation context where error occurred.
+            error (commands.CommandError): The exception that was raised.
+            
+        Returns:
+            None
+            
+        Note:
+            - Uses guild name for logger, or "DirectMessage" for DMs
+            - Gracefully handles failures in error message sending
+            - Prints to console as fallback if logger unavailable
+        """
+        # Ignore certain errors
+        ignored = (commands.CommandNotFound, commands.DisabledCommand)
+        if isinstance(error, ignored):
+            return
+
+        # Try to get logger through bot
+        logger = None
+        if hasattr(self, "get_logger_for_guild"):
+            guild_id = str(ctx.guild.id) if getattr(ctx, "guild", None) else "DirectMessage"
+            try:
+                logger = self.get_logger_for_guild(guild_id)
+            except Exception:
+                logger = None
+
+        # Log error
+        if logger:
+            logger.error(f"Error in command '{ctx.command}': {error}")
+            logger.error("".join(traceback.format_exception(type(error), error, error.__traceback__)))
+
+        await func.report_error(error, f"on_command_error: {ctx.command}")
+
+        # Try to reply to channel (only log if reply fails, don't raise)
+        try:
+            guild_id_str = str(ctx.guild.id) if getattr(ctx, "guild", None) else "0"
+            lang_manager = self.get_cog("LanguageManager")
+            if lang_manager:
+                try:
+                    error_msg = lang_manager.translate(guild_id_str, "system", "errors", "unexpected")
+                except Exception:
+                    error_msg = "❌ 抱歉，執行此指令時發生未預期的錯誤。(An unexpected error occurred.)"
+            else:
+                error_msg = "❌ 抱歉，執行此指令時發生未預期的錯誤。(An unexpected error occurred.)"
+
+            await ctx.send(error_msg)
+        except Exception as e:
+            if logger:
+                logger.error("Failed replying error message", exception=e)
+            else:
+                log.error(f"Failed replying error message: {e}", exception=e)
+            await func.report_error(error, f"on_command_error_reply_fail: {ctx.command}")
+            
+    async def send_error_report(self, embed: discord.Embed):
+        bug_report_channel_id = tokens.bug_report_channel_id
+        if not bug_report_channel_id:
+            return
+
+        # Attempt to get logger; fallback to default if not available
+        try:
+            logger = self.get_logger_for_guild("Bot")
+        except Exception:
+            from addons.logging import log as fallback_log
+            logger = fallback_log
+
+        try:
+            # 1. Ensure the bot is connected and internal cache/HTTP client is ready
+            # Calling fetch_channel when not ready triggers AttributeError: '_MissingSentinel' object has no attribute 'is_set'
+            if not self.is_ready():
+                logger.warning(f"Bot not ready; skipping remote error report to channel {bug_report_channel_id}")
+                return
+
+            # 2. Try to get from cache first
+            channel = self.get_channel(int(bug_report_channel_id))
+            
+            # 3. Fallback to API call if not in cache (ensures reaching channel even after long inactivity)
+            if not channel:
+                try:
+                    channel = await self.fetch_channel(int(bug_report_channel_id))
+                except Exception as fetch_exc:
+                    logger.error(f"Failed to fetch error report channel {bug_report_channel_id}: {fetch_exc}")
+                    return
+            
+            # 4. Final attempt to send the embed
+            if channel:
+                try:
+                    await channel.send(embed=embed)
+                except Exception as send_exc:
+                    logger.error(f"Failed to send embed to channel {bug_report_channel_id}: {send_exc}")
+            else:
+                logger.error(f"Could not find bug report channel: {bug_report_channel_id}")
+
+        except Exception as e:
+            # Catch any remaining unexpected errors to prevent loop (error reporting failing during error reporting)
+            logger.error(f"Unexpected error while sending report to channel {bug_report_channel_id}: {e}")
+
+                
+    async def close(self):
+        """Gracefully shut down the bot and all systems.
+        
+        Performs cleanup in the following order:
+        1. Calls parent class close() to disconnect from Discord
+        2. Cancels all pending asyncio tasks
+        3. Shuts down default executor thread pool
+        
+        Returns:
+            None
+            
+        Note:
+            - Prevents "Task exception was never retrieved" warnings
+            - Avoids threading._shutdown hanging issues
+            - Handles exceptions during shutdown gracefully
+            - Should be called before program termination
+        """
+        try:         
+            # Shutdown dashboard server gracefully
+            try:
+                from dashboard.main import stop_dashboard
+                await stop_dashboard(self)
+            except Exception:
+                pass
+
+            # Close parent class (disconnect from Discord, etc.)
+            await super().close()
+
+            # Gracefully cancel all remaining tasks in event loop to avoid Task exception was never retrieved
+            pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task() and not t.done()]
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+
+            # Finally close asyncio default thread pool to avoid threading._shutdown hanging
+            try:
+                loop = asyncio.get_running_loop()
+                await loop.shutdown_default_executor()
+            except Exception as e:
+                logger = getattr(self, "system_logger", log)
+                logger.error(f"Error occurred while shutting down default executor: {e}", exception=e)
+        except Exception as e:
+            logger = getattr(self, "system_logger", log)
+            logger.error(f"Error occurred while closing bot: {e}", exception=e)
