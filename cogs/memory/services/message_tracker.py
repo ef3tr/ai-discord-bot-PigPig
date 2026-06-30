@@ -1,0 +1,299 @@
+# cogs/memory/services/message_tracker.py
+
+import asyncio
+import discord
+import logging
+from typing import TYPE_CHECKING, Union
+
+from function import func
+from addons.settings import MemoryConfig
+from datetime import datetime
+
+from cogs.memory.interfaces.storage_interface import StorageInterface
+from cogs.memory.services.event_summarization_service import EventSummarizationService, EventSummary
+from cogs.memory.services.vectorization_service import VectorizationService
+
+if TYPE_CHECKING:
+    from bot import PigPig as Bot
+
+logger = logging.getLogger(__name__)
+
+def discord_id_to_unix_timestamp(message_id: int) -> float:
+    """
+    Convert Discord message ID to Unix timestamp in milliseconds.
+    
+    Args:
+        message_id (int): The Discord message ID
+        
+    Returns:
+        float: The Unix timestamp in milliseconds when the message was created
+    """
+    DISCORD_EPOCH = 1420070400000  # Discord epoch in milliseconds
+    return ((message_id >> 22) + DISCORD_EPOCH) / 1000
+
+class MessageTracker:
+    """
+    Tracks new messages in channels for the memory system.
+    """
+
+    def __init__(self, bot: 'Bot', storage: 'StorageInterface', settings: MemoryConfig):
+        """
+        Initializes the MessageTracker.
+
+        Args:
+            bot (Bot): The bot instance.
+            storage (StorageInterface): The storage backend implementing storage operations.
+            settings (MemoryConfig): The settings instance.
+        """
+        self.bot = bot
+        self.storage = storage
+        self.settings = settings
+        self._pending_message_count = 0
+        self._processing_tasks = {}
+        # Global semaphore to limit concurrent background memory processing
+        concurrency = getattr(self.settings, "processing_concurrency", 1)
+        self._processing_semaphore = asyncio.Semaphore(concurrency)
+        self._active_summarization_task = None
+
+    async def track_message(self, message: discord.Message):
+        """
+        Tracks a message, adding it to the pending list if it's not from a bot
+        and not in an excluded channel. Also updates channel memory state.
+
+        Args:
+            message (discord.Message): The message to track.
+        """
+        if message.author.bot:
+            return
+
+        try:
+            # Update channel memory state
+            channel_id = message.channel.id
+            channel_state = await self.storage.get_channel_memory_state(channel_id)
+            
+            if channel_state is None:
+                # Initialize new channel state
+                await self.storage.update_channel_memory_state(
+                    channel_id, 
+                    1, 
+                    message.id,
+                    last_summary_timestamp=message.created_at.timestamp()
+                )
+            else:
+                # Update existing channel state
+                new_message_count = channel_state['message_count'] + 1
+                await self.storage.update_channel_memory_state(channel_id, new_message_count, channel_state['start_message_id'])
+                
+                # Check if message threshold is reached
+                if new_message_count >= self.settings.message_threshold:
+                    # Log threshold reached and trigger async task
+                    logger.info(f"Message threshold reached for channel {channel_id} (count: {new_message_count}), triggering memory processing")
+                    # Ensure channel is a valid messageable channel before passing to _schedule_processing
+                    if isinstance(message.channel, (discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.Thread)):
+                        self._schedule_processing(message.channel)
+                    else:
+                        logger.warning(f"Skipping memory processing for unsupported channel {channel_id}")
+                else:
+                    # Check time threshold
+                    last_summary_timestamp = channel_state.get('last_summary_timestamp', 0.0)
+                    current_time = message.created_at.timestamp()
+                    # Default time threshold: 1 hour (3600 seconds) if not in settings
+                    time_threshold = getattr(self.settings, 'time_threshold', 3600)
+                    
+                    if current_time - last_summary_timestamp > time_threshold and new_message_count > 0:
+                         logger.info(f"Time threshold reached for channel {channel_id} (last: {last_summary_timestamp}), triggering memory processing")
+                         if isinstance(message.channel, (discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.Thread)):
+                            self._schedule_processing(message.channel)
+                
+        except Exception as e:
+            await func.report_error(e, f"Failed to track message {message.id}")
+
+    def _schedule_processing(self, channel: Union[discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.Thread]):
+        """
+        Schedules channel memory processing with a debounce delay.
+        This prevents the background LLM task from competing with 
+        the immediate reply generation triggered just after this.
+        """
+        channel_id = channel.id
+        
+        # Cancel any existing pending task for this channel
+        if channel_id in self._processing_tasks and not self._processing_tasks[channel_id].done():
+            self._processing_tasks[channel_id].cancel()
+            
+        async def delayed_process():
+            try:
+                # Wait for inactivity before starting background LLM
+                delay = getattr(self.settings, "processing_delay", 30.0)
+                await asyncio.sleep(delay)
+                
+                # Limit global concurrent memory processing tasks across all channels
+                async with self._processing_semaphore:
+                    await self._process_channel_memory(channel)
+            except asyncio.CancelledError:
+                # Task was cancelled because a new message arrived, expected behavior
+                pass
+            except Exception as e:
+                logger.error(f"Error in delayed memory processing for channel {channel_id}: {e}")
+                
+        # Schedule the new task
+        self._processing_tasks[channel_id] = asyncio.create_task(delayed_process())
+
+    def interrupt_all(self):
+        """
+        Interrupts all pending and active memory processing tasks.
+        This is called when a high-priority conversation task (handle_message) starts.
+        """
+        # 1. Cancel all pending debounce/delay tasks
+        for channel_id, task in list(self._processing_tasks.items()):
+            if not task.done():
+                task.cancel()
+        self._processing_tasks.clear()
+        
+        # 2. Cancel the active LLM summarization task if it exists
+        if self._active_summarization_task and not self._active_summarization_task.done():
+            logger.info("High-priority message detected: Interrupting active background memory processing.")
+            self._active_summarization_task.cancel()
+
+    async def _process_channel_memory(self, channel: Union[discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.Thread]):
+        """
+        Processes memory for a channel when threshold is reached.
+        
+        Args:
+            channel (discord.TextChannel): The channel to process memory for.
+        """
+        # Register current task as the active summarization task for global interruption
+        self._active_summarization_task = asyncio.current_task()
+        
+        try:
+            logger.info(f"Processing memory for channel {channel.id}")
+            
+            # Get channel state
+            state = await self.storage.get_channel_memory_state(channel.id)
+            if not state:
+                logger.error(f"No memory state found for channel {channel.id}")
+                return
+            
+            # Get start message
+            start_message = None
+            try:
+                start_message = await channel.fetch_message(state['start_message_id'])
+            except discord.NotFound:
+                logger.warning(f"Start message {state['start_message_id']} not found in channel {channel.id}, calculating timestamp from ID")
+            except discord.Forbidden:
+                logger.error(f"Permission denied to fetch start message {state['start_message_id']} in channel {channel.id}")
+                return
+                
+            # Get message history
+            all_messages = []
+            
+            if start_message:
+                # Use the actual message object
+                all_messages.append(start_message)
+                start_timestamp = start_message.created_at
+            else:
+                # Calculate timestamp from message ID when message is not found
+                start_timestamp = discord.utils.snowflake_time(state['start_message_id'])
+                logger.info(f"Calculated timestamp from message ID: {start_timestamp}")
+            
+            # Get messages after the calculated/found timestamp
+            messages = []
+            # Use a bounded limit based on message threshold to prevent memory exhaustion
+            # Multiple of 2 provides a safety margin while preventing unbounded fetches
+            fetch_limit = getattr(self.settings, "message_threshold", 100) * 2
+            async for message in channel.history(after=start_timestamp, limit=fetch_limit):
+                messages.append(message)
+            
+            all_messages.extend(messages)
+            
+            logger.info(f"Retrieved {len(all_messages)} messages for processing in channel {channel.id}")
+            
+            # Initialize EventSummarizationService
+            summarization_service = EventSummarizationService(self.bot, self.settings)
+            
+            # Call event summarization
+            messages_to_process = all_messages
+            # Get previous summary for context
+            channel_state = await self.storage.get_channel_memory_state(channel.id)
+            previous_summary = channel_state.get("last_summary_text", "") if channel_state else ""
+
+            # Summarize events
+            event_summaries = await summarization_service.summarize_events(
+                messages_to_process, 
+                previous_summary=previous_summary
+            )
+            
+            # Check if event summaries is empty
+            if not event_summaries:
+                logger.info(f"No events summarized from {len(messages_to_process)} messages in channel {channel.id}")
+                return
+            
+            # Log successful retrieval of event summaries
+            logger.info(f"Successfully retrieved {len(event_summaries)} event summaries from channel {channel.id}")
+            
+            # Initialize VectorizationService
+            vector_manager = getattr(self.bot, "vector_manager", None)
+            vectorization_service = VectorizationService(
+                bot=self.bot,
+                storage=self.storage,
+                vector_manager=vector_manager,
+                settings=self.settings
+            )
+            
+            # Process event summaries through VectorizationService
+            await vectorization_service.process_event_summaries(event_summaries)
+            
+            # Log successful submission of event summaries to VectorizationService
+            logger.info(f"Successfully submitted {len(event_summaries)} event summaries from channel {channel.id} to vectorization service")
+            
+            # Update channel memory state for next processing cycle
+            # Update channel memory state for next processing cycle
+            # Combine all summaries into one text for the next context
+            combined_summary = "\n".join([s.query_value for s in event_summaries])
+            
+            await self.storage.update_channel_memory_state(
+                channel_id=channel.id,
+                message_count=0,
+                start_message_id=messages_to_process[-1].id,
+                last_summary_timestamp=datetime.now().timestamp(),
+                last_summary_text=combined_summary
+            )
+            
+            # Log successful update of channel memory state
+            logger.info(f"Successfully updated memory state for channel {channel.id}, new start_message_id: {messages_to_process[-1].id}")
+            
+            # If the number of retrieved messages equals the fetch limit, it indicates
+            # that there are likely more historical messages remaining in this channel.
+            # We schedule another processing cycle to automatically drain the queue.
+            if len(messages) == fetch_limit:
+                logger.info(
+                    f"Retrieved maximum batch size ({fetch_limit}) for channel {channel.id}. "
+                    "More historical messages may remain. Scheduling next draining batch."
+                )
+                self._schedule_processing(channel)
+            
+        except asyncio.CancelledError:
+            logger.info(f"Memory processing for channel {channel.id} was interrupted to prioritize user conversation.")
+            # Do not re-raise; we want to exit gracefully without updating DB state
+            # Next time threshold is reached, it will try again from original state.
+            return
+        except Exception as e:
+            await func.report_error(e, f"Failed to process memory for channel {channel.id}")
+        finally:
+            # Clear active task reference if we are the one registered
+            if self._active_summarization_task == asyncio.current_task():
+                self._active_summarization_task = None
+
+    def get_pending_count(self) -> int:
+        """
+        Gets the current count of pending messages.
+
+        Returns:
+            int: The number of pending messages.
+        """
+        return self._pending_message_count
+
+    def reset_pending_count(self):
+        """
+        Resets the pending message count to zero.
+        """
+        self._pending_message_count = 0
