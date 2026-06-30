@@ -1,0 +1,6 @@
+{
+    "id_format": "用户 ID：{user_id}",
+    "user": {
+        "id_format": "用户 ID：{user_id}"
+    }
+}

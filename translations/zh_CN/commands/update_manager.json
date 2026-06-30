@@ -1,0 +1,166 @@
+{
+    "permissions": {
+        "no_permission": "❌ 您没有权限使用此命令",
+        "owner_only_update": "❌ 仅限机器人拥有者可以执行更新",
+        "owner_only_config": "❌ 仅限机器人拥有者可以配置更新设置"
+    },
+    "system": {
+        "not_initialized": "❌ 更新系统未正确初始化",
+        "busy": "⚠️ 更新进行中",
+        "busy_description": "更新系统正忙碌中，当前状态：{status}",
+        "idle": {
+            "title": "💤 更新系统空闲",
+            "description": "自动更新系统正常运行"
+        },
+        "checking": {
+            "title": "🔍 正在检查更新",
+            "description": "正在查询 GitHub 最新版本..."
+        },
+        "downloading": {
+            "title": "⬇️ 正在下载更新",
+            "description": "下载进度：{progress}%"
+        },
+        "updating": {
+            "title": "🔄 正在更新",
+            "description": "更新进度：{progress}%"
+        },
+        "restarting": {
+            "title": "🔄 正在重启",
+            "description": "机器人正在重新启动..."
+        },
+        "error": {
+            "title": "❌ 系统错误",
+            "description": "错误：{error}"
+        },
+        "unknown": {
+            "title": "❓ 未知状态",
+            "description": "状态：{status}"
+        }
+    },
+    "commands": {
+        "check_update": {
+            "title": "🔍 版本检查结果",
+            "current_version": "当前版本",
+            "latest_version": "最新版本",
+            "available": {
+                "status": "🆕 有新版本可用",
+                "published_at": "发布时间"
+            },
+            "up_to_date": {
+                "status": "✅ 已是最新版本"
+            },
+            "error": {
+                "title": "❌ 检查失败",
+                "description": "检查更新时发生错误，已回报给开发者。"
+            }
+        },
+        "update_now": {
+            "no_update_needed": {
+                "title": "ℹ️ 无需更新",
+                "description": "已是最新版本，无需更新。如要强制更新，请使用 `force: True` 参数。"
+            },
+            "confirm": {
+                "title": "⚠️ 更新确认",
+                "description": "确定要从 `{current_version}` 更新到 `{latest_version}` 吗？",
+                "warning": "更新过程中机器人将会重启"
+            },
+            "force_confirm": {
+                "title": "⚠️ 强制更新确认",
+                "description": "确定要执行强制更新吗？",
+                "warning": "强制更新可能会覆盖当前版本"
+            },
+            "error": {
+                "title": "❌ 更新失败",
+                "description": "准备更新时发生错误，已回报给开发者。"
+            }
+        },
+        "update_status": {
+            "error": {
+                "title": "❌ 状态查询失败",
+                "description": "获取状态时发生错误，已回报给开发者。"
+            }
+        },
+        "update_config": {
+            "title": "⚙️ 更新系统配置",
+            "description": "请选择要配置的选项：",
+            "auto_update": "自动更新",
+            "check_interval": "检查间隔",
+            "require_confirmation": "需要确认",
+            "enabled": "✅ 启用",
+            "disabled": "❌ 停用",
+            "hours": "{hours}小时"
+        }
+    },
+    "views": {
+        "update_action": {
+            "update_now": {
+                "label": "立即更新",
+                "style": "success",
+                "emoji": "🚀"
+            },
+            "remind_later": {
+                "label": "稍后提醒",
+                "style": "secondary",
+                "emoji": "⏰"
+            },
+            "confirm": {
+                "title": "⚠️ 更新确认",
+                "description": "确定要立即执行更新吗？",
+                "warning": "更新过程中机器人将会重启"
+            },
+            "reminded": {
+                "title": "⏰ 已设定稍后提醒",
+                "description": "将在下次检查更新时再次提醒您。"
+            }
+        },
+        "update_confirm": {
+            "confirm": {
+                "label": "确认更新",
+                "style": "danger",
+                "emoji": "✅"
+            },
+            "cancel": {
+                "label": "取消",
+                "style": "secondary",
+                "emoji": "❌"
+            },
+            "starting": {
+                "title": "🔄 开始更新",
+                "description": "更新程序已开始，请查看 DM 获取详细进度。\n\n⚠️ **请不要关闭机器人，更新完成后将自动重启。**",
+                "color": "blue"
+            },
+            "cancelled": {
+                "title": "❌ 更新已取消",
+                "description": "更新操作已被取消。"
+            },
+            "failed": {
+                "title": "❌ 更新失败",
+                "description": "更新过程中发生错误：{error}"
+            },
+            "backup": {
+                "name": "备份信息",
+                "value": "系统已回滚到备份：`{backup_id}`"
+            }
+        },
+        "update_config": {
+            "toggle_auto_update": {
+                "label": "开关自动更新",
+                "style": "primary",
+                "emoji": "🔄"
+            },
+            "set_check_interval": {
+                "label": "设定检查间隔",
+                "style": "secondary",
+                "emoji": "⏱️"
+            },
+            "in_development": "⚠️ 配置功能开发中..."
+        }
+    },
+    "fields": {
+        "operation": "当前操作",
+        "last_check": "上次检查",
+        "auto_update": "自动更新",
+        "status": "状态",
+        "warning": "警告"
+    }
+}
