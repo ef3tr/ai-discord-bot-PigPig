@@ -1,0 +1,238 @@
+import asyncio
+from datetime import datetime, timezone
+import sys
+import types
+
+import pytest
+
+async def _noop_report_error(*args, **kwargs):
+    return None
+
+# Lightweight stubs for optional external dependencies used by ContextManager
+fake_discord = types.ModuleType("discord")
+fake_discord.Message = object
+sys.modules.setdefault("discord", fake_discord)
+
+fake_langchain_messages = types.ModuleType("langchain_core.messages")
+class _BaseMessage:
+    def __init__(self, content=None, name=None):
+        self.content = content
+        self.name = name
+class _HumanMessage(_BaseMessage):
+    pass
+class _AIMessage(_BaseMessage):
+    pass
+fake_langchain_messages.BaseMessage = _BaseMessage
+fake_langchain_messages.HumanMessage = _HumanMessage
+fake_langchain_messages.AIMessage = _AIMessage
+fake_langchain_core = types.ModuleType("langchain_core")
+fake_langchain_core.__path__ = []
+sys.modules["langchain_core"] = fake_langchain_core
+fake_langchain_core.messages = fake_langchain_messages
+sys.modules["langchain_core.messages"] = fake_langchain_messages
+
+class _DummyLogger:
+    def info(self, *args, **kwargs):
+        return None
+
+    def warning(self, *args, **kwargs):
+        return None
+
+    def error(self, *args, **kwargs):
+        return None
+
+    def debug(self, *args, **kwargs):
+        return None
+
+fake_logging = types.ModuleType("addons.logging")
+fake_logging.get_logger = lambda **kwargs: _DummyLogger()
+
+# Snapshot real addons.settings attributes before this module overwrites
+# sys.modules["addons.settings"] with a lightweight stub.  The real module is
+# guaranteed to already be cached (tests/conftest.py pre-loads it).  We carry
+# these real objects forward so that test modules collected after this one —
+# e.g. test_embed_processor.py (module-level import of attachment_config) and
+# test_procedural_memory.py (module-level import of memory_config) — continue
+# to receive valid, non-stub values even though sys.modules["addons.settings"]
+# will point to our fake.
+_real_settings = sys.modules.get("addons.settings")
+_real_attachment_config = getattr(_real_settings, "attachment_config", None)
+_real_AttachmentConfig = getattr(_real_settings, "AttachmentConfig", None)
+_real_memory_config = getattr(_real_settings, "memory_config", None)
+
+fake_settings = types.ModuleType("addons.settings")
+fake_settings.base_config = {}
+fake_settings.llm_config = types.SimpleNamespace(llm_call_timeout=60)
+fake_settings.memory_config = types.SimpleNamespace(enabled=True, procedural_cache_ttl=300.0)
+# Propagate real symbols that other test modules import at collection time.
+# Use the real value when available; fall back to the stub for memory_config
+# so this file's own behaviour is unchanged when running standalone.
+if _real_attachment_config is not None:
+    fake_settings.attachment_config = _real_attachment_config
+if _real_AttachmentConfig is not None:
+    fake_settings.AttachmentConfig = _real_AttachmentConfig
+if _real_memory_config is not None:
+    fake_settings.memory_config = _real_memory_config
+
+fake_addons = types.ModuleType("addons")
+fake_addons.logging = fake_logging
+fake_addons.settings = fake_settings
+sys.modules["addons"] = fake_addons
+sys.modules["addons.logging"] = fake_logging
+sys.modules["addons.settings"] = fake_settings
+
+fake_function = types.ModuleType("function")
+fake_function.func = types.SimpleNamespace(report_error=_noop_report_error)
+sys.modules["function"] = fake_function
+
+fake_cogs = types.ModuleType("cogs")
+fake_cogs.__path__ = []
+sys.modules["cogs"] = fake_cogs
+fake_cogs_memory = types.ModuleType("cogs.memory")
+fake_cogs_memory.__path__ = []
+sys.modules["cogs.memory"] = fake_cogs_memory
+
+fake_cogs_memory_db = types.ModuleType("cogs.memory.db")
+fake_cogs_memory_db.__path__ = []
+sys.modules["cogs.memory.db"] = fake_cogs_memory_db
+
+fake_cogs_memory_db_knowledge = types.ModuleType("cogs.memory.db.knowledge_storage")
+class _DummyKnowledgeStorage:
+    pass
+fake_cogs_memory_db_knowledge.KnowledgeStorage = _DummyKnowledgeStorage
+sys.modules["cogs.memory.db.knowledge_storage"] = fake_cogs_memory_db_knowledge
+
+fake_cogs_memory_users = types.ModuleType("cogs.memory.users")
+fake_cogs_memory_users.__path__ = []
+sys.modules["cogs.memory.users"] = fake_cogs_memory_users
+fake_cogs_memory_users_manager = types.ModuleType("cogs.memory.users.manager")
+class _DummySQLiteUserManager:
+    async def get_multiple_users(self, user_ids):
+        return {}
+fake_cogs_memory_users_manager.SQLiteUserManager = _DummySQLiteUserManager
+sys.modules["cogs.memory.users.manager"] = fake_cogs_memory_users_manager
+
+import llm.context_manager as context_manager
+from llm.context_manager import ContextManager
+from llm.memory.schema import ProceduralMemory, UserInfo
+
+
+class StubShortTermProvider:
+    def __init__(self, fail_with=None, messages=None):
+        self.fail_with = fail_with
+        self.messages = messages or []
+        self.calls = 0
+
+    async def get(self, message):
+        self.calls += 1
+        if self.fail_with:
+            raise self.fail_with
+        return self.messages
+
+
+class StubProceduralProvider:
+    def __init__(self):
+        self.requested_ids = None
+        self.all_calls: list = []
+
+    async def get(self, user_ids):
+        ids = list(user_ids)
+        self.requested_ids = ids
+        self.all_calls.append(ids)
+        return ProceduralMemory(
+            user_info={uid: UserInfo(user_background="bg") for uid in ids}
+        )
+
+
+def _make_message(user_id: str = "123"):
+    return types.SimpleNamespace(
+        author=types.SimpleNamespace(id=user_id),
+        channel=types.SimpleNamespace(name="general", id="456"),
+        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        content="hello",
+    )
+
+
+@pytest.mark.asyncio
+async def test_procedural_fetch_still_runs_when_short_term_fails(monkeypatch):
+    monkeypatch.setattr(context_manager, "func", types.SimpleNamespace(report_error=_noop_report_error))
+    short_term_provider = StubShortTermProvider(fail_with=RuntimeError("boom"))
+    procedural_provider = StubProceduralProvider()
+    manager = ContextManager(short_term_provider, procedural_provider, episodic_provider=None)
+
+    procedural_str, short_term_msgs = await manager.get_context(_make_message())
+
+    assert short_term_msgs == []
+    assert procedural_provider.requested_ids == ["123"]
+    assert "User: 123" in procedural_str
+
+
+@pytest.mark.asyncio
+async def test_extract_error_falls_back_to_author(monkeypatch):
+    monkeypatch.setattr(context_manager, "func", types.SimpleNamespace(report_error=_noop_report_error))
+    short_term_provider = StubShortTermProvider(messages=[])
+    procedural_provider = StubProceduralProvider()
+    manager = ContextManager(short_term_provider, procedural_provider, episodic_provider=None)
+
+    def _raise_extract(*args, **kwargs):
+        raise RuntimeError("extract failed")
+
+    monkeypatch.setattr(manager, "_extract_user_ids_from_messages", _raise_extract)
+
+    await manager.get_context(_make_message("456"))
+
+    assert procedural_provider.requested_ids == ["456"]
+
+
+@pytest.mark.asyncio
+async def test_short_term_cancellation_propagates(monkeypatch):
+    monkeypatch.setattr(context_manager, "func", types.SimpleNamespace(report_error=_noop_report_error))
+    short_term_provider = StubShortTermProvider(fail_with=asyncio.CancelledError())
+    procedural_provider = StubProceduralProvider()
+    manager = ContextManager(short_term_provider, procedural_provider, episodic_provider=None)
+
+    with pytest.raises(asyncio.CancelledError):
+        await manager.get_context(_make_message())
+
+
+@pytest.mark.asyncio
+async def test_additional_users_from_stm_fetches_procedural_for_all(monkeypatch):
+    """Procedural provider is invoked for both author and additional STM user ids."""
+    monkeypatch.setattr(context_manager, "func", types.SimpleNamespace(report_error=_noop_report_error))
+
+    # STM returns a message whose content references a second user
+    second_user_id = "789"
+    stm_message = _BaseMessage(content=f"UserID:{second_user_id} said hello")
+    short_term_provider = StubShortTermProvider(messages=[stm_message])
+    procedural_provider = StubProceduralProvider()
+    manager = ContextManager(short_term_provider, procedural_provider, episodic_provider=None)
+
+    author_id = "123"
+    procedural_str, short_term_msgs = await manager.get_context(_make_message(author_id))
+
+    # All user ids that were requested across all provider calls
+    all_fetched_ids: set[str] = set()
+    for call in procedural_provider.all_calls:
+        all_fetched_ids.update(call)
+
+    assert author_id in all_fetched_ids, "author id must be fetched"
+    assert second_user_id in all_fetched_ids, "additional user id from STM must be fetched"
+    assert f"User: {author_id}" in procedural_str
+    assert f"User: {second_user_id}" in procedural_str
+
+
+@pytest.mark.asyncio
+async def test_episodic_cancellation_propagates(monkeypatch):
+    """CancelledError from episodic provider must propagate out of get_context."""
+    monkeypatch.setattr(context_manager, "func", types.SimpleNamespace(report_error=_noop_report_error))
+
+    class _CancellingEpisodicProvider:
+        async def get(self, message):
+            raise asyncio.CancelledError()
+
+    short_term_provider = StubShortTermProvider(messages=[])
+    procedural_provider = StubProceduralProvider()
+    manager = ContextManager(short_term_provider, procedural_provider, episodic_provider=_CancellingEpisodicProvider())
+
+    with pytest.raises(asyncio.CancelledError):
+        await manager.get_context(_make_message())
