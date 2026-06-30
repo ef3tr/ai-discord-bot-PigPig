@@ -1,0 +1,166 @@
+{
+    "permissions": {
+        "no_permission": "❌ 您沒有權限使用此命令",
+        "owner_only_update": "❌ 僅限 Bot 擁有者可以執行更新",
+        "owner_only_config": "❌ 僅限 Bot 擁有者可以配置更新設定"
+    },
+    "system": {
+        "not_initialized": "❌ 更新系統未正確初始化",
+        "busy": "⚠️ 更新進行中",
+        "busy_description": "更新系統正忙碌中，當前狀態：{status}",
+        "idle": {
+            "title": "💤 更新系統閒置",
+            "description": "自動更新系統正常運行"
+        },
+        "checking": {
+            "title": "🔍 正在檢查更新",
+            "description": "正在查詢 GitHub 最新版本..."
+        },
+        "downloading": {
+            "title": "⬇️ 正在下載更新",
+            "description": "下載進度：{progress}%"
+        },
+        "updating": {
+            "title": "🔄 正在更新",
+            "description": "更新進度：{progress}%"
+        },
+        "restarting": {
+            "title": "🔄 正在重啟",
+            "description": "Bot 正在重新啟動..."
+        },
+        "error": {
+            "title": "❌ 系統錯誤",
+            "description": "錯誤：{error}"
+        },
+        "unknown": {
+            "title": "❓ 未知狀態",
+            "description": "狀態：{status}"
+        }
+    },
+    "commands": {
+        "check_update": {
+            "title": "🔍 版本檢查結果",
+            "current_version": "當前版本",
+            "latest_version": "最新版本",
+            "available": {
+                "status": "🆕 有新版本可用",
+                "published_at": "發布時間"
+            },
+            "up_to_date": {
+                "status": "✅ 已是最新版本"
+            },
+            "error": {
+                "title": "❌ 檢查失敗",
+                "description": "檢查更新時發生錯誤，已回報給開發者。"
+            }
+        },
+        "update_now": {
+            "no_update_needed": {
+                "title": "ℹ️ 無需更新",
+                "description": "已是最新版本，無需更新。如要強制更新，請使用 `force: True` 參數。"
+            },
+            "confirm": {
+                "title": "⚠️ 更新確認",
+                "description": "確定要從 `{current_version}` 更新到 `{latest_version}` 嗎？",
+                "warning": "更新過程中 Bot 將會重啟"
+            },
+            "force_confirm": {
+                "title": "⚠️ 強制更新確認",
+                "description": "確定要執行強制更新嗎？",
+                "warning": "強制更新可能會覆蓋當前版本"
+            },
+            "error": {
+                "title": "❌ 更新失敗",
+                "description": "準備更新時發生錯誤，已回報給開發者。"
+            }
+        },
+        "update_status": {
+            "error": {
+                "title": "❌ 狀態查詢失敗",
+                "description": "獲取狀態時發生錯誤，已回報給開發者。"
+            }
+        },
+        "update_config": {
+            "title": "⚙️ 更新系統配置",
+            "description": "請選擇要配置的選項：",
+            "auto_update": "自動更新",
+            "check_interval": "檢查間隔",
+            "require_confirmation": "需要確認",
+            "enabled": "✅ 啟用",
+            "disabled": "❌ 停用",
+            "hours": "{hours}小時"
+        }
+    },
+    "views": {
+        "update_action": {
+            "update_now": {
+                "label": "立即更新",
+                "style": "success",
+                "emoji": "🚀"
+            },
+            "remind_later": {
+                "label": "稍後提醒",
+                "style": "secondary",
+                "emoji": "⏰"
+            },
+            "confirm": {
+                "title": "⚠️ 更新確認",
+                "description": "確定要立即執行更新嗎？",
+                "warning": "更新過程中 Bot 將會重啟"
+            },
+            "reminded": {
+                "title": "⏰ 已設定稍後提醒",
+                "description": "將在下一次檢查更新時再次提醒您。"
+            }
+        },
+        "update_confirm": {
+            "confirm": {
+                "label": "確認更新",
+                "style": "danger",
+                "emoji": "✅"
+            },
+            "cancel": {
+                "label": "取消",
+                "style": "secondary",
+                "emoji": "❌"
+            },
+            "starting": {
+                "title": "🔄 開始更新",
+                "description": "更新程序已開始，請查看 DM 獲取詳細進度。\n\n⚠️ **請不要關閉 Bot，更新完成後將自動重啟。**",
+                "color": "blue"
+            },
+            "cancelled": {
+                "title": "❌ 更新已取消",
+                "description": "更新操作已被取消。"
+            },
+            "failed": {
+                "title": "❌ 更新失敗",
+                "description": "更新過程中發生錯誤：{error}"
+            },
+            "backup": {
+                "name": "備份資訊",
+                "value": "系統已回滾到備份：`{backup_id}`"
+            }
+        },
+        "update_config": {
+            "toggle_auto_update": {
+                "label": "開關自動更新",
+                "style": "primary",
+                "emoji": "🔄"
+            },
+            "set_check_interval": {
+                "label": "設定檢查間隔",
+                "style": "secondary",
+                "emoji": "⏱️"
+            },
+            "in_development": "⚠️ 配置功能開發中..."
+        }
+    },
+    "fields": {
+        "operation": "當前操作",
+        "last_check": "上次檢查",
+        "auto_update": "自動更新",
+        "status": "狀態",
+        "warning": "警告"
+    }
+}

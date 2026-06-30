@@ -1,0 +1,15 @@
+{
+    "responses": {
+        "received": "提醒已接收",
+        "confirm_setup": "確認設置提醒",
+        "future_time_required": "需要未來時間",
+        "invalid_format": "無效的格式",
+        "reminder_message": "提醒: {message}",
+        "fallback_user": "使用者",
+        "error_setting": "設置提醒時發生錯誤"
+    },
+    "time_units": {
+        "seconds": "秒",
+        "unit_key": "時間單位"
+    }
+}
